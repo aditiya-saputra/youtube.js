@@ -2,6 +2,8 @@
 
 Koleksi lengkap, hasil deobfuskasi, dan analisis arsitektur modul JavaScript client-side produksi YouTube (Web Desktop & HTML5 Player).
 
+> **Catatan / Disclaimer:** Repo ini hanya untuk mempelajari mekanisme client YouTube dan mempelajari bagaimana Google mengambil data secara transparansi dalam bentuk pembongkaran kode.
+
 ---
 
 ## 📋 Daftar Isi

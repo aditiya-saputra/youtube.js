@@ -1,0 +1,42 @@
+{
+  "type": "browserify",
+  "entryId": "8",
+  "modules": [
+    {
+      "id": "1",
+      "path": "addons/build.js"
+    },
+    {
+      "id": "2",
+      "path": "addons/matchrecursive.js"
+    },
+    {
+      "id": "3",
+      "path": "addons/unicode-base.js"
+    },
+    {
+      "id": "4",
+      "path": "addons/unicode-blocks.js"
+    },
+    {
+      "id": "5",
+      "path": "addons/unicode-categories.js"
+    },
+    {
+      "id": "6",
+      "path": "addons/unicode-properties.js"
+    },
+    {
+      "id": "7",
+      "path": "addons/unicode-scripts.js"
+    },
+    {
+      "id": "8",
+      "path": "index.js"
+    },
+    {
+      "id": "9",
+      "path": "xregexp.js"
+    }
+  ]
+}

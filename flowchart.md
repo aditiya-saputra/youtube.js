@@ -71,6 +71,51 @@ flowchart TD
     EventBus -->|Video End| ShowEndScreen["Render kartu & rekomendasi video shorts/lainnya"]
 ```
 
+### 2.1 Alur Rinci Pemecahan Cipher Signature (`s` -> `sig`)
+
+```mermaid
+flowchart TD
+    RawCipher["Input dari Innertube: signatureCipher<br/>(url, sp='sig', s='encrypted_token')"] --> SplitChar["Pecah string token jadi array karakter:<br/>s = s.split('')"]
+    
+    SplitChar --> OpsSequence["Eksekusi Serangkaian Operasi Transformasi Objek jB:"]
+    
+    subgraph TransformObj["Objek Transformasi jB (deobfs/base/deobfuscated.js:110164)"]
+        direction TB
+        OpSwap["jB.Fe(a, b): SWAP<br/>c = a[0]; a[0] = a[b % len]; a[b % len] = c;"]
+        OpSplice["jB.FG(a, b): SPLICE<br/>a.splice(0, b); (Potong b karakter pertama)"]
+        OpReverse["jB.Gz(a): REVERSE<br/>a.reverse(); (Balikkan urutan array)"]
+    end
+    
+    OpsSequence --> TransformObj
+    TransformObj --> JoinChar["Gabungkan kembali array karakter:<br/>sig = s.join('')"]
+    JoinChar --> BuildStreamURL["Susun final streaming URL:<br/>url + '&' + sp + '=' + sig"]
+```
+
+### 2.2 Alur Rinci Pemecahan N-Token (Anti-Throttling Engine)
+
+```mermaid
+flowchart TD
+    StreamURL["Video Stream URL mengandung parameter:<br/>...&n=raw_token&..."] --> ExtractN["Ekstrak nilai parameter n via regex / URLSearchParams"]
+    
+    ExtractN --> StateMachine["Eksekusi Algoritma Transformasi N-Token (Fungsi Bl, line 12401)"]
+    
+    subgraph NAlgorithm["State Machine Transformasi N (base.js)"]
+        direction TB
+        Step1["Modulo Array Index:<br/>c = (c % len + len) % len"]
+        Step2["Reverse & Swap Karakter Array:<br/>a.reverse(), swap(0, c)"]
+        Step3["Mutasi Indeks & Splice Rotasi:<br/>for (h = len; h;) push(splice(--h, 1)[0])"]
+        Step4["Pemberian Parameter CDN Route:<br/>cmo=td / cmo=pf (Player Fallback Routing)"]
+        Step1 --> Step2 --> Step3 --> Step4
+    end
+    
+    StateMachine --> NAlgorithm
+    NAlgorithm --> NewN["Hasilkan string transformed_n yang valid"]
+    
+    NewN --> CheckMatch{"Server CDN GoogleVideo<br/>validasi kecocokan n?"}
+    CheckMatch -- "Gagal / Tidak Diubah" --> Throttled["Speed Throttled (< 50 KB/s)<br/>Buffering parah"]
+    CheckMatch -- "Sukses" --> FullSpeed["Bandwidth Penuh (Unthrottled)<br/>Streaming HD/4K Lancar"]
+```
+
 ---
 
 ## 3. `kevlar_base.js` — YouTube Desktop Web App (Kevlar SPA)

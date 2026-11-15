@@ -314,19 +314,142 @@ flowchart TD
     OnCommand -->|addEventListener| RegisterHostEvent["Laporkan stateChange (BUFFERING, PLAYING, ENDED) via postMessage"]
 ```
 
+### 11.5 `components/endscreen.js` — End Screen & Rekomendasi Video
+```mermaid
+flowchart TD
+    VideoNearEnd([video.currentTime mendekati akhir]) --> FetchEndscreen["Ambil payload endscreenRenderer dari playerResponse"]
+    FetchEndscreen --> ParseCards["Parse elemen: thumbnail, judul, channel, clickTrackingParams"]
+    ParseCards --> RenderOverlay["Render kartu interaktif di atas canvas video player"]
+    RenderOverlay --> UserAction{"User berinteraksi"}
+    UserAction -->|Klik Kartu| NavigateVideo["Kirim clickTrackingParams & picu navigasi ke video rekomendasi"]
+    UserAction -->|Abaikan / Biarkan Selesai| TriggerAutoplay["Jika autoplay aktif, hitung mundur dan putar next video"]
+```
+
+### 11.6 `components/miniplayer.js` — Floating Miniplayer / PiP Controller
+```mermaid
+flowchart TD
+    MiniToggle([User scroll ke bawah / klik tombol miniplayer]) --> CalcPosition["Hitung dimensi & posisi sudut kanan bawah layar"]
+    CalcPosition --> DetachDOM["Pindahkan elemen video dari ytd-watch-flexy ke ytd-miniplayer container"]
+    DetachDOM --> ScaleVideo["Ubah ukuran viewport video player tanpa me-reset MSE buffer"]
+    ScaleVideo --> MiniControls["Tampilkan kontrol mini: Play/Pause, Close, Expand kembali"]
+```
+
+### 11.7 `components/lottie-light.js` & `components/worker-serialization.js` — Animasi Mikro & Worker IPC
+```mermaid
+flowchart TD
+    subgraph UIThread["Main UI Thread"]
+        LikeClick([Klik Tombol Like / Subscribe]) --> TriggerLottie["Panggil lottie.loadAnimation(JSON vektor)"]
+        TriggerLottie --> CanvasRender["Render frame animasi partikel dinamis di canvas/SVG"]
+        HeavyData([Data respon Innertube besar]) --> SerializeWorker["Kirim raw payload ke Web Worker"]
+    end
+
+    subgraph WorkerThread["Background Web Worker"]
+        SerializeWorker --> WorkerDeserializer["worker-serialization.js: Fast binary / Protobuf parsing"]
+        WorkerDeserializer --> WorkerPerf["worker-performance.js: Catat waktu pemrosesan thread"]
+        WorkerPerf --> ReturnData["Kirim data terurai kembali ke main UI thread"]
+    end
+```
+
 ---
 
-## Ringkasan Struktur File
+## 12. Alur Telemetri, Pengumpulan Data & Umpan Balik Rekomendasi (Feedback Loop)
 
+Bagian ini mendokumentasikan bagaimana client JavaScript YouTube mengumpulkan data perilaku penonton (*telemetry signals*) dan mengirimkannya ke sistem rekomendasi Google (*Candidate Generation & Ranking DNN*):
 
-| File Asli | File Deobfuskasi | Ukuran Asli | Kategori / Tanggung Jawab |
-|---|---|---|---|
-| `base.js` | `deobfs/base/deobfuscated.js` | 2.6 MB | HTML5 Player Engine, Cipher/Signature Decryption, MSE Streaming |
-| `kevlar_base.js` | `deobfs/kevlar_base/deobfuscated.js` + modules | 9.4 MB | Desktop Web App (Polymer SPA), Innertube Client, Router Bridge |
-| `spf.js` | `deobfs/spf/deobfuscated.js` | 38 KB | Structured Page Fragments (PWA / PJAX Navigation Framework) |
-| `network.js` | `deobfs/network/deobfuscated.js` | 15 KB | Transport XHR/Fetch khusus SPF dengan custom headers |
-| `scheduler.js` | `deobfs/scheduler/deobfuscated.js` | 8.1 KB | Cooperative Task Scheduler (prioritas eksekusi task) |
-| `webcomponents-sd.js` | `deobfs/webcomponents-sd/deobfuscated.js` | 78 KB | Shady DOM & ShadyCSS Polyfill untuk Polymer components |
-| `web-animations-next-lite.min.js` | `deobfs/web-animations-next-lite.min/deobfuscated.js` | 50 KB | Web Animations API Polyfill untuk transisi UI |
-| `intersection-observer.min.js` | `deobfs/intersection-observer.min/deobfuscated.js` | 5.5 KB | W3C IntersectionObserver Polyfill (Lazy-load thumbnail) |
-| `www-i18n-constants.js` | `deobfs/www-i18n-constants/deobfuscated.js` | 6.2 KB | Konstanta lokalisasi Closure Library (`id_ID`) |
+```mermaid
+flowchart TD
+    subgraph ClientSensors["1. Sensor Perilaku di Sisi Client"]
+        MouseKB["Interaksi Fisik (Mouse, Keyboard, Scroll)"] --> LACT["Hitung LACT (Last Active Client Time)"]
+        VisAPI["Page Visibility API & IntersectionObserver"] --> INVIEW["Hitung inview (0: tab background, 1: aktif ditonton)"]
+        PlayLoop["Loop Playback base.js"] --> SEGMENTS["Catat Segmen Watch Time (detik tonton nyata vs skip)"]
+        Hover["Hover kursor di thumbnail beranda"] --> INLINE["inlinePlayback: Rekam durasi preview (tanpa klik)"]
+        Impressions["Thumbnail masuk viewport"] --> VE["Ekstrak veType & trackingParams unik"]
+    end
+
+    subgraph TelemetryAggregation["2. Agregasi & Validasi Client (base.js / kevlar_base.js)"]
+        SEGMENTS --> DelayCheck{"Durasi tonton ><br/>delayThresholdMet (5-30 dtk)?"}
+        DelayCheck -- Tidak --> BounceSignal["Tandai kemungkinan Bounce / Clickbait"]
+        DelayCheck -- Ya --> ValidWatch["Tandai Valid Engaged View"]
+        
+        LACT & INVIEW & ValidWatch --> VSSPayload["Susun Payload VSS3 / Watchtime:<br/>- cmt (current media time)<br/>- len (durasi media)<br/>- lact (status atensi)<br/>- inview (visibilitas layar)<br/>- cpn (client playback nonce)<br/>- serializedWatchEndpointLoggingContext"]
+    end
+
+    subgraph NetworkDispatch["3. Pengiriman Jaringan ke Endpoint Google"]
+        VSSPayload --> SendWatchtime["POST /api/stats/watchtime (Heartbeat berkala)"]
+        BounceSignal --> SendWatchtime
+        VE --> SendGEL["POST /youtubei/v1/log_event (Global Event Logging / Clearcut)"]
+        INLINE --> SendWatchtime
+    end
+
+    subgraph RecommendationEngine["4. Algoritma Rekomendasi Server (Google Brain / Deep Neural Networks)"]
+        SendWatchtime & SendGEL --> CandidateGen["Candidate Generation:<br/>Filter jutaan video menjadi ratusan berdasarkan topik & riwayat watchtime"]
+        CandidateGen --> RankingDNN["Ranking Model:<br/>Skor video berdasarkan retensi segmen + completion rate + atensi LACT"]
+        RankingDNN --> NewFeed["Hasilkan Rekomendasi Baru yang Disesuaikan di Beranda / Up-Next"]
+    end
+```
+
+---
+
+## 13. Alur End-to-End: Siklus Hidup dari Klik URL hingga Video Selesai
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User
+    participant Browser as Browser Window
+    participant Polyfills as Polyfills (WC/WA/IO)
+    participant SPF as SPF Router & Network
+    participant Kevlar as Kevlar Desktop SPA
+    participant Player as base.js Player Engine
+    participant Innertube as YouTube Backend / CDN
+
+    User->>Browser: Buka https://youtube.com/watch?v=xyz
+    Browser->>Polyfills: Inisialisasi ShadyDOM, WebAnimations, IntersectionObserver
+    Browser->>SPF: Inisialisasi router & pasang listener onpopstate
+    SPF->>Innertube: Request data halaman watch via network.js
+    Innertube-->>SPF: Response JSON (HTML fragments, scripts, ytcfg config)
+    SPF->>Kevlar: Suntikkan fragmen ke DOM & render elemen ytd-watch-flexy
+    Kevlar->>Player: Instansiasi pemutar video (_yt_player)
+    Player->>Innertube: Fetch playerResponse (streaming URLs, cipher data)
+    Innertube-->>Player: Kembalikan formats data & encrypted signature/n-token
+    Player->>Player: Jalankan deobfuscated decipher algorithm (swap, reverse, splice)
+    Player->>Innertube: Request audio/video media chunks via MSE (MediaSource)
+    Innertube-->>Player: Stream byte chunks (DASH itags)
+    Player->>Browser: Putar video di HTML5 <video> element
+    
+    loop Heartbeat Telemetri (Tiap 10-30 detik)
+        Player->>Innertube: Kirim /api/stats/watchtime (segments, lact, inview, cpn)
+    end
+
+    User->>Browser: Video mendekati akhir
+    Player->>Player: Inisialisasi endscreen.js & render kartu rekomendasi
+    Player->>Innertube: Kirim quartile 100% completeUrls
+```
+
+---
+
+## 14. Ringkasan Lengkap 20 Berkas Client YouTube
+
+| No | File Asli | File Deobfuskasi | Ukuran | Kategori | Tanggung Jawab Utama |
+|:---:|---|---|:---:|:---:|---|
+| 1 | `base.js` | `deobfs/base/deobfuscated.js` | 2.6 MB | Core Player | Engine HTML5 Player, decipher signature/n-token, MSE adaptive streaming. |
+| 2 | `kevlar_base.js` | `deobfs/kevlar_base/deobfuscated.js` | 9.4 MB | App Framework | Desktop SPA, Custom Elements Polymer, Innertube API client. |
+| 3 | `spf.js` | `deobfs/spf/deobfuscated.js` | 38 KB | Navigation | PWA pjax router, pergantian fragmen DOM dinamis tanpa refresh halaman. |
+| 4 | `network.js` | `deobfs/network/deobfuscated.js` | 15 KB | Network | Layer XHR transport khusus SPF dengan header kustom (`X-SPF-*`). |
+| 5 | `scheduler.js` | `deobfs/scheduler/deobfuscated.js` | 8.1 KB | Infrastructure | Cooperative task scheduler (`yt.scheduler`) berbasis idle budget CPU. |
+| 6 | `webcomponents-sd.js` | `deobfs/webcomponents-sd/deobfuscated.js` | 78 KB | Polyfill | Shady DOM & ShadyCSS untuk enkapsulasi CSS template Polymer. |
+| 7 | `web-animations-next-lite.min.js` | `deobfs/web-animations-next-lite.min/deobfuscated.js` | 50 KB | Polyfill | Web Animations API (WAAPI) lite untuk animasi fluida UI. |
+| 8 | `intersection-observer.min.js` | `deobfs/intersection-observer.min/deobfuscated.js` | 5.5 KB | Polyfill | W3C IntersectionObserver untuk lazy-loading gambar thumbnail. |
+| 9 | `www-i18n-constants.js` | `deobfs/www-i18n-constants/deobfuscated.js` | 6.2 KB | Localization | Simbol tanggal & waktu bahasa Indonesia (`id_ID`) Closure Library. |
+| 10 | `components/captions.js` | `deobfs/components/captions/deobfuscated.js` | 77 KB | Player Plugin | Parser subtitle XML/VTT & sinkronisasi waktu tampilan teks. |
+| 11 | `components/endscreen.js` | `deobfs/components/endscreen/deobfuscated.js` | 28 KB | Player Plugin | Render kartu rekomendasi interaktif di akhir video & link tracking. |
+| 12 | `components/remote.js` | `deobfs/components/remote/deobfuscated.js` | 118 KB | Player Plugin | Kontroler Google Cast / Chromecast & pairing WebSocket Lounge. |
+| 13 | `components/miniplayer.js` | `deobfs/components/miniplayer/deobfuscated.js` | 7.5 KB | Player Plugin | Floating Picture-in-Picture controller saat scroll halaman. |
+| 14 | `components/annotations_module.js` | `deobfs/components/annotations_module/deobfuscated.js` | 69 KB | Player Plugin | Anotasi video lama, kartu info sudut kanan atas, dan survey. |
+| 15 | `components/embed.js` | `deobfs/components/embed/deobfuscated.js` | 32 KB | Player Plugin | Runtime IFrame Embed API & bridge komunikasi `postMessage`. |
+| 16 | `components/serviceworker.js` | `deobfs/components/serviceworker/deobfuscated.js` | 238 KB | Worker / PWA | Service worker PWA: offline fallback cache, background sync, web push. |
+| 17 | `components/lottie-light.js` | `deobfs/components/lottie-light/deobfuscated.js` | 206 KB | UI Component | Renderer animasi vektor Lottie untuk animasi tombol like, subscribe. |
+| 18 | `components/worker-performance.js` | `deobfs/components/worker-performance/deobfuscated.js` | 2.6 KB | Worker Infra | Pengukur latency dan metrik eksekusi Web Worker. |
+| 19 | `components/worker-serialization.js` | `deobfs/components/worker-serialization/deobfuscated.js` | 30 KB | Worker Infra | Serialisasi biner cepat / Protobuf antar Web Worker dan Main Thread. |
+| 20 | `components/custom-elements-es5-adapter.js` | `deobfs/components/custom-elements-es5-adapter/deobfuscated.js` | 2.0 KB | Polyfill | Bridge adapter Custom Elements v1 agar kompatibel dengan ES5. |
+

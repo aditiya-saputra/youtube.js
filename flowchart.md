@@ -268,7 +268,56 @@ flowchart TD
 
 ---
 
+## 11. Komponen Ekstensi Tambahan
+
+### 11.1 `components/serviceworker.js` — YouTube PWA Service Worker
+```mermaid
+flowchart TD
+    SWInstall([Event: install]) --> Precaching["Pre-cache shell assets & offline fallback pages"]
+    Precaching --> SWActivate([Event: activate])
+    SWActivate --> ClaimClients["clients.claim() & bersihkan cache versi usang"]
+    
+    FetchEvent([Event: fetch]) --> InterceptStrategy{"Tipe Request"}
+    InterceptStrategy -->|Watch Page HTML| NetworkFirst["Network-First: Coba jaringan -> Fallback cache"]
+    InterceptStrategy -->|Static Assets JS/CSS| CacheFirst["Cache-First: Ambil cache -> Background revalidate"]
+    InterceptStrategy -->|Video Media Stream| BypassSW["Bypass SW (MediaSource langsung streaming)"]
+    
+    SyncEvent([Event: sync / push]) --> HandleBackground["Background sync analitik & kirim Web Push notifications"]
+```
+
+### 11.2 `components/captions.js` — Subtitle & Closed Captions Engine
+```mermaid
+flowchart TD
+    StartCaptions([User Aktifkan Subtitle]) --> FetchFormat["Ambil daftar track dari player response (timedtext)"]
+    FetchFormat --> DownloadTrack["Fetch format XML/VTT (misal: /api/timedtext?v=...&lang=id)"]
+    DownloadTrack --> ParseCue["Parse timestamp (start, durasi) & format teks (gaya, posisi, warna)"]
+    ParseCue --> SyncLoop["Loop Sinkronisasi Pemutaran:<br/>Bandingkan video.currentTime dengan Cue interval"]
+    SyncLoop --> RenderSubtitle["Render teks subtitle ke overlay container pemutar"]
+```
+
+### 11.3 `components/remote.js` — Google Cast & Remote Screen Controller
+```mermaid
+flowchart TD
+    CastClick([Klik Ikon Cast]) --> ScanDevices["Deteksi Chromecast & Smart TV via Cast SDK / DIAL"]
+    ScanDevices --> ConnectSession["Inisialisasi Peer Session / WebSocket pairing (m.youtube.com/api/lounge)"]
+    ConnectSession --> SyncPlayback["Mirroring status: sync video_id, timestamp, volume, playlist"]
+    SyncPlayback --> RemoteLoop["Kirim perintah remote (play/pause/seek) ke layar eksternal"]
+```
+
+### 11.4 `components/embed.js` — IFrame Embed API Runtime
+```mermaid
+flowchart TD
+    EmbedInit([IFrame Loaded]) --> ParseEmbedParams["Baca URL params (enablejsapi, origin, autoplay, controls)"]
+    ParseEmbedParams --> PostMessageBus["Pasang event listener window.onmessage (PostMessage Protocol)"]
+    PostMessageBus --> OnCommand{"Menerima Pesan Host"}
+    OnCommand -->|playVideo / pauseVideo| ControlPlayer["Kendalikan instance pemutar internal"]
+    OnCommand -->|addEventListener| RegisterHostEvent["Laporkan stateChange (BUFFERING, PLAYING, ENDED) via postMessage"]
+```
+
+---
+
 ## Ringkasan Struktur File
+
 
 | File Asli | File Deobfuskasi | Ukuran Asli | Kategori / Tanggung Jawab |
 |---|---|---|---|
